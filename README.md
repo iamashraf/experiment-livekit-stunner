@@ -204,6 +204,11 @@ address outside the `UDPRoute`'s backend. Terminal 2 shows LiveKit's
 both `caller` and `agent`. Terminal 3's counters move in lockstep with the
 call. All three are independent, live evidence - not scripted output.
 
+You'll also see `ERROR ... failed Simulcast probing` lines in Terminal 2 -
+that's `lk`'s `--publish-demo` synthetic video track hitting a harmless pion
+quirk (an SSRC it can't map to a simulcast layer), nothing to do with STUNner
+or the relay. Terminal 3's counters keep climbing through it.
+
 > **Setting up a browser client? Two things are required, not optional:**
 > 1. Force relay-only ICE on `room.connect()`'s own `rtcConfig` -
 >    `{ rtcConfig: { iceTransportPolicy: 'relay' } }` - not on `new Room()`,
