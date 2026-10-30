@@ -1,0 +1,192 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>STUNner + LiveKit local call test</title>
+<script src="https://cdn.jsdelivr.net/npm/livekit-client@2.9.2/dist/livekit-client.umd.min.js"
+        integrity="sha384-2gW6VSrWpTCQ5CJtCExXW4z0wgMtSWks2edw2uCJmW0EZKuix3spZUU50H/ZwRPW"
+        crossorigin="anonymous"></script>
+<style>
+  body { font-family: system-ui, sans-serif; margin: 2rem; background: #111; color: #eee; }
+  input, button { font-size: 1rem; padding: 0.4rem; margin: 0.2rem 0; }
+  input[type=text] { width: 100%; box-sizing: border-box; }
+  button { cursor: pointer; }
+  #levels { margin-top: 1.5rem; display: flex; flex-direction: column; gap: 0.8rem; max-width: 420px; }
+  .meter-row { display: flex; align-items: center; gap: 0.6rem; }
+  .meter-row .label { width: 90px; font-size: 0.9rem; color: #aaa; }
+  .meter-track { flex: 1; height: 16px; background: #222; border: 1px solid #444; position: relative; }
+  .meter-fill { position: absolute; left: 0; top: 0; bottom: 0; width: 0%; background: #4ade80; transition: width 60ms linear; }
+  #status { margin-top: 0.5rem; color: #8f8; }
+  label { display: block; margin-top: 0.6rem; font-size: 0.85rem; color: #aaa; }
+</style>
+</head>
+<body>
+  <h2>STUNner relay test &mdash; audio-only call through LiveKit</h2>
+  <p style="color:#888; max-width: 480px;">
+    This is an audio-only call. The bars below show live audio energy per
+    participant &mdash; proof that media is actually flowing, relayed through
+    STUNner, not that LiveKit is "doing a video call".
+  </p>
+
+  <label>LiveKit server URL (ws://, via the real Ingress on :80, no port-forward)</label>
+  <input type="text" id="url" value="ws://localhost" />
+
+  <label>Token server URL</label>
+  <input type="text" id="tokenServer" value="http://localhost:8082" />
+
+  <label>Identity</label>
+  <input type="text" id="identity" value="caller" />
+
+  <label>Room</label>
+  <input type="text" id="room" value="uicall" />
+
+  <div>
+    <button id="connectBtn">Connect &amp; talk (mic only)</button>
+    <button id="disconnectBtn" disabled>Disconnect</button>
+  </div>
+
+  <div id="status">disconnected</div>
+  <div id="levels"></div>
+
+<script>
+const { Room, RoomEvent, Track } = LivekitClient;
+
+const urlInput = document.getElementById('url');
+const connectBtn = document.getElementById('connectBtn');
+const disconnectBtn = document.getElementById('disconnectBtn');
+const statusEl = document.getElementById('status');
+const levelsEl = document.getElementById('levels');
+
+const tokenServerInput = document.getElementById('tokenServer');
+const identityInput = document.getElementById('identity');
+const roomInput = document.getElementById('room');
+
+const params = new URLSearchParams(location.search);
+if (params.get('identity')) identityInput.value = params.get('identity');
+if (params.get('room')) roomInput.value = params.get('room');
+if (params.get('url')) urlInput.value = params.get('url');
+
+async function fetchToken(tokenServerUrl, identity, room) {
+  const res = await fetch(`${tokenServerUrl}/token?identity=${encodeURIComponent(identity)}&room=${encodeURIComponent(room)}`);
+  if (!res.ok) throw new Error(`token server returned ${res.status}`);
+  const data = await res.json();
+  return data.token;
+}
+
+let room;
+let audioCtx;
+const meters = new Map(); // trackSid -> { stop() }
+
+function addMeter(participantIdentity, track) {
+  if (meters.has(track.sid)) return;
+
+  const row = document.createElement('div');
+  row.className = 'meter-row';
+  row.id = `meter-${track.sid}`;
+  const label = document.createElement('div');
+  label.className = 'label';
+  label.textContent = participantIdentity;
+  const trackEl = document.createElement('div');
+  trackEl.className = 'meter-track';
+  const fill = document.createElement('div');
+  fill.className = 'meter-fill';
+  trackEl.appendChild(fill);
+  row.appendChild(label);
+  row.appendChild(trackEl);
+  levelsEl.appendChild(row);
+
+  if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  const stream = new MediaStream([track.mediaStreamTrack]);
+  const source = audioCtx.createMediaStreamSource(stream);
+  const analyser = audioCtx.createAnalyser();
+  analyser.fftSize = 512;
+  source.connect(analyser);
+  const data = new Uint8Array(analyser.frequencyBinCount);
+
+  let rafId;
+  function tick() {
+    analyser.getByteTimeDomainData(data);
+    let sumSquares = 0;
+    for (let i = 0; i < data.length; i++) {
+      const centered = (data[i] - 128) / 128;
+      sumSquares += centered * centered;
+    }
+    const rms = Math.sqrt(sumSquares / data.length);
+    const pct = Math.min(100, Math.round(rms * 300));
+    fill.style.width = `${pct}%`;
+    rafId = requestAnimationFrame(tick);
+  }
+  tick();
+
+  meters.set(track.sid, {
+    stop() {
+      cancelAnimationFrame(rafId);
+      source.disconnect();
+      row.remove();
+    }
+  });
+}
+
+function removeMeterFor(track) {
+  const m = meters.get(track.sid);
+  if (m) { m.stop(); meters.delete(track.sid); }
+}
+
+connectBtn.addEventListener('click', async () => {
+  const url = urlInput.value.trim();
+  const identity = identityInput.value.trim();
+  const roomName = roomInput.value.trim();
+  const tokenServerUrl = tokenServerInput.value.trim();
+  if (!url || !identity || !roomName || !tokenServerUrl) {
+    alert('fill in server URL, token server URL, identity and room');
+    return;
+  }
+
+  let token;
+  try {
+    statusEl.textContent = 'requesting token...';
+    token = await fetchToken(tokenServerUrl, identity, roomName);
+  } catch (err) {
+    statusEl.textContent = `failed to get token: ${err}`;
+    console.error(err);
+    return;
+  }
+
+  room = new Room();
+
+  room.on(RoomEvent.TrackSubscribed, (track, pub, participant) => {
+    if (track.kind === Track.Kind.Audio) addMeter(participant.identity, track);
+  });
+  room.on(RoomEvent.TrackUnsubscribed, (track) => removeMeterFor(track));
+  room.on(RoomEvent.LocalTrackPublished, (pub) => {
+    if (pub.track && pub.track.kind === Track.Kind.Audio) addMeter('local (you)', pub.track);
+  });
+  room.on(RoomEvent.Disconnected, () => {
+    statusEl.textContent = 'disconnected';
+    connectBtn.disabled = false;
+    disconnectBtn.disabled = true;
+    for (const m of meters.values()) m.stop();
+    meters.clear();
+  });
+  room.on(RoomEvent.ConnectionStateChanged, (state) => {
+    statusEl.textContent = `connection state: ${state}`;
+  });
+
+  try {
+    await room.connect(url, token);
+    await room.localParticipant.setMicrophoneEnabled(true);
+    statusEl.textContent = `connected as ${room.localParticipant.identity} to room ${room.name}`;
+    connectBtn.disabled = true;
+    disconnectBtn.disabled = false;
+  } catch (err) {
+    statusEl.textContent = `connect failed: ${err}`;
+    console.error(err);
+  }
+});
+
+disconnectBtn.addEventListener('click', () => {
+  if (room) room.disconnect();
+});
+</script>
+</body>
+</html>

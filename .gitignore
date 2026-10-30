@@ -1,0 +1,20 @@
+# secrets / tokens - never commit
+.env.local
+.env.*.local
+tokens.env
+*.jwt
+*.token
+
+# local Python env
+.venv/
+__pycache__/
+*.pyc
+
+# generated test artifacts
+test-screenshots/
+test-results/
+*.webm
+*.gif
+
+# local k8s/kubeconfig artifacts, if ever dumped here
+kubeconfig*

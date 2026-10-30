@@ -1,0 +1,133 @@
+---
+# Redis
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: redis
+  labels:
+    app: redis
+spec:
+  serviceName: redis
+  replicas: 1
+  selector:
+    matchLabels:
+      app: redis
+  template:
+    metadata:
+      labels:
+        app: redis
+    spec:
+      containers:
+        - name: redis
+          image: redis
+          command: ["redis-server", "--bind", "0.0.0.0"]
+          ports:
+            - containerPort: 6379
+---
+apiVersion: v1
+kind: Service
+metadata:
+  labels:
+    app: redis
+  name: redis
+spec:
+  ports:
+    - port: 6379
+      protocol: TCP
+      targetPort: 6379
+  selector:
+    app: redis
+  clusterIP: None
+---
+# Livekit server - ordinary pod, hostNetwork: false (default), no Ingress/TLS.
+# Signaling is reached via the `livekit-signaling` Ingress; media is reachable
+# ONLY through the STUNner TURN relay (127.0.0.1:3478), since the rtc UDP port
+# range and TCP fallback port are deliberately not exposed outside the
+# cluster. A successful call therefore proves the media crossed STUNner.
+#
+# Secrets are NOT hardcoded here - copy .env.example to .env.local, fill in
+# real values, then: set -a; source .env.local; set +a
+#   envsubst < livekit-server-minimal.yaml | kubectl apply -f -
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: livekit-server
+data:
+  config.yaml: |
+    keys:
+      access_token: ${LIVEKIT_API_SECRET}
+    log_level: info
+    port: 7880
+    redis:
+      address: redis.default.svc:6379
+    rtc:
+      port_range_end: 60000
+      port_range_start: 50000
+      tcp_port: 7801
+      stun_servers:
+      - 127.0.0.1:3478
+      turn_servers:
+      - credential: ${STUNNER_PASSWORD}
+        host: 127.0.0.1
+        port: 3478
+        protocol: udp
+        username: ${STUNNER_USERNAME}
+      use_external_ip: false
+    turn:
+      enabled: false
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: livekit-server
+  labels:
+    app.kubernetes.io/name: livekit-server
+    app.kubernetes.io/instance: livekit
+spec:
+  type: ClusterIP
+  ports:
+    - port: 7880
+      targetPort: 7880
+      protocol: TCP
+      name: http
+  selector:
+    app.kubernetes.io/name: livekit-server
+    app.kubernetes.io/instance: livekit
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: livekit-server
+  labels:
+    app.kubernetes.io/name: livekit-server
+    app.kubernetes.io/instance: livekit
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: livekit-server
+      app.kubernetes.io/instance: livekit
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: livekit-server
+        app.kubernetes.io/instance: livekit
+    spec:
+      hostNetwork: false
+      serviceAccountName: default
+      terminationGracePeriodSeconds: 30
+      containers:
+        - name: livekit-server
+          image: "livekit/livekit-server:v1.13.10"
+          imagePullPolicy: IfNotPresent
+          args: ["--disable-strict-config"]
+          env:
+            - name: LIVEKIT_CONFIG
+              valueFrom:
+                configMapKeyRef:
+                  name: livekit-server
+                  key: config.yaml
+          ports:
+            - name: http
+              containerPort: 7880
+              protocol: TCP
