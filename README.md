@@ -17,17 +17,9 @@ Only STUNner's own gateway needs to be reachable, and it needs that **once**,
 regardless of how many media-server pods sit behind it.
 
 This repo stands up that architecture locally (kind + Podman) and proves it
-with a real two-way call.
-
-![Terminal recording: a real call is made between two lk CLI clients (caller and agent), while stunnerd's and livekit-server's own logs stream live in the same terminal, showing real traffic between the client, STUNner and LiveKit as the call happens](docs/demo.gif)
-
-*A real terminal session (recorded with `asciinema`, no browser automation
-involved): `stunnerd` and `livekit-server` logs are tailed live while two
-`lk` CLI clients join the same room and publish/subscribe to each other.
-The interleaved `[stunnerd]`/`[livekit]` lines are genuine log output from
-the actual running pods, not a script's narration - direct evidence of
-traffic moving between the client, STUNner's relay, and `livekit-server`
-as the call happens.*
+with a real two-way call. See **Verifying traffic flow yourself** below for
+the exact commands to watch it happen live - that's more useful than a
+recording, since you control the pace.
 
 ## Architecture
 
@@ -178,12 +170,39 @@ lk room join "$ROOM" --identity agent --url http://localhost \
   --publish-demo --auto-subscribe --yes &
 ```
 
-Then watch STUNner's relay counters move:
+## Verifying traffic flow yourself
 
+Run these in separate terminals while the `lk room join` commands above are
+active, to watch real traffic move between the client, STUNner and LiveKit
+at your own pace (a recording can't substitute for this - run it live):
+
+**Terminal 1 - STUNner's own logs** (allocations, permission checks):
 ```bash
-kubectl -n stunner port-forward deploy/udp-gateway 8080:8080 &
-curl -s http://localhost:8080/metrics | grep ^stunner_
+kubectl --context kind-stunner-livekit -n stunner logs -f deploy/udp-gateway
 ```
+
+**Terminal 2 - LiveKit's own logs** (participants joining, tracks publishing):
+```bash
+kubectl --context kind-stunner-livekit logs -f deploy/livekit-server
+```
+
+**Terminal 3 - STUNner's relay counters, polled every second:**
+```bash
+kubectl --context kind-stunner-livekit -n stunner port-forward deploy/udp-gateway 8080:8080 &
+watch -n1 'curl -s http://localhost:8080/metrics | grep ^stunner_'
+```
+`stunner_allocations_active` and the `stunner_cluster_bytes_total`/
+`stunner_cluster_packets_total` counters should rise from `0` as soon as the
+call starts, and climb continuously while it's active.
+
+**Terminal 4 - make the call** (the commands from **Running a call** above).
+
+What to look for: Terminal 1 shows `stunnerd` creating TURN allocations and
+permissions for the call, and denying any `CreatePermission` request for an
+address outside the `UDPRoute`'s backend. Terminal 2 shows LiveKit's
+`participant active` / `mediaTrack published` / `track subscribed` lines for
+both `caller` and `agent`. Terminal 3's counters move in lockstep with the
+call. All three are independent, live evidence - not scripted output.
 
 > **Setting up a browser client? Two things are required, not optional:**
 > 1. Force relay-only ICE on `room.connect()`'s own `rtcConfig` -
