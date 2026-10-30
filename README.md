@@ -19,15 +19,18 @@ regardless of how many media-server pods sit behind it.
 This repo stands up that architecture locally (kind + Podman) and proves it
 with a real two-way call.
 
-![Two browser tabs, caller and agent, connected to the same LiveKit room with live audio-level meters reacting to each other's voice, media relayed entirely through STUNner](docs/demo.gif)
+![Three panes: caller and agent browser tabs joining the same LiveKit room with live audio-level meters, plus a live STUNner metrics panel showing active TURN allocations and relay byte/packet counters climbing in real time during the call](docs/demo.gif)
 
-*Both tabs are real browsers (headless Chromium via Playwright for this
-capture, but verified identically in a normal windowed browser) - each
-publishes a fake/synthetic microphone track and subscribes to the other's.
-The moving green bars are a live Web Audio `AnalyserNode` reading the actual
-incoming `MediaStreamTrack`, not a canned animation - proof the audio is
-really arriving over the network, through STUNner, from a `livekit-server`
-pod with no `hostNetwork`.*
+*Left two panes are real browsers (headless Chromium via Playwright for this
+capture, verified identically in a normal windowed browser), from blank form
+through connecting through a live call - each publishes a fake/synthetic
+microphone track and subscribes to the other's. The green bars are a live Web
+Audio `AnalyserNode` reading the actual incoming `MediaStreamTrack`, not a
+canned animation. The right pane polls STUNner's own `/metrics` endpoint
+live: active TURN allocations and relay byte/packet counters climbing from
+zero as the call proceeds - direct proof the audio is physically crossing
+STUNner's relay into a `livekit-server` pod with no `hostNetwork`, not just
+that the UI says "connected".*
 
 ## Architecture
 
