@@ -142,6 +142,13 @@ connectBtn.addEventListener('click', async () => {
     return;
   }
 
+  // Create/resume the AudioContext right here, inside the click handler's
+  // own call stack - Chrome's autoplay policy can leave it permanently
+  // suspended if it's first created later, inside an async event callback
+  // (e.g. RoomEvent.TrackSubscribed) that's no longer tied to the gesture.
+  if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  if (audioCtx.state === 'suspended') await audioCtx.resume();
+
   let token;
   try {
     statusEl.textContent = 'requesting token...';
@@ -158,9 +165,6 @@ connectBtn.addEventListener('click', async () => {
     if (track.kind === Track.Kind.Audio) addMeter(participant.identity, track);
   });
   room.on(RoomEvent.TrackUnsubscribed, (track) => removeMeterFor(track));
-  room.on(RoomEvent.LocalTrackPublished, (pub) => {
-    if (pub.track && pub.track.kind === Track.Kind.Audio) addMeter('local (you)', pub.track);
-  });
   room.on(RoomEvent.Disconnected, () => {
     statusEl.textContent = 'disconnected';
     connectBtn.disabled = false;
@@ -180,7 +184,15 @@ connectBtn.addEventListener('click', async () => {
     // though the media server's pod can never actually route to a client's
     // LAN address - the call looks "connected" but no media crosses.
     await room.connect(url, token, { rtcConfig: { iceTransportPolicy: 'relay' } });
-    await room.localParticipant.setMicrophoneEnabled(true);
+    // dtx (voice-activity silence suppression) is on by default and can
+    // treat a quiet/synthetic input as "silence", stopping transmission;
+    // noise suppression can also treat a pure synthetic tone as a tonal
+    // noise artifact and suppress it. Disable both so audio flows plainly.
+    await room.localParticipant.setMicrophoneEnabled(
+      true,
+      { autoGainControl: false, noiseSuppression: false, echoCancellation: false },
+      { dtx: false, red: false }
+    );
     statusEl.textContent = `connected as ${room.localParticipant.identity} to room ${room.name}`;
     connectBtn.disabled = true;
     disconnectBtn.disabled = false;
