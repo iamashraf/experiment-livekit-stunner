@@ -10,11 +10,10 @@ tokens.env
 __pycache__/
 *.pyc
 
-# generated test artifacts
+# generated test artifacts (docs/*.gif is intentionally tracked, not ignored)
 test-screenshots/
 test-results/
 *.webm
-*.gif
 
 # local k8s/kubeconfig artifacts, if ever dumped here
 kubeconfig*

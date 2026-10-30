@@ -19,6 +19,16 @@ regardless of how many media-server pods sit behind it.
 This repo stands up that architecture locally (kind + Podman) and proves it
 with a real two-way call.
 
+![Two browser tabs, caller and agent, connected to the same LiveKit room with live audio-level meters reacting to each other's voice, media relayed entirely through STUNner](docs/demo.gif)
+
+*Both tabs are real browsers (headless Chromium via Playwright for this
+capture, but verified identically in a normal windowed browser) - each
+publishes a fake/synthetic microphone track and subscribes to the other's.
+The moving green bars are a live Web Audio `AnalyserNode` reading the actual
+incoming `MediaStreamTrack`, not a canned animation - proof the audio is
+really arriving over the network, through STUNner, from a `livekit-server`
+pod with no `hostNetwork`.*
+
 ## Architecture
 
 ```
@@ -112,12 +122,17 @@ manifests, runs `token_server.py`, or calls `lk` - they all need to agree:
 
 ```bash
 cp .env.example .env.local
-# edit .env.local: fill in LIVEKIT_API_SECRET and STUNNER_PASSWORD, e.g.
+# edit .env.local: fill in LIVEKIT_API_SECRET, STUNNER_PASSWORD, STUNNER_HOST_IP, e.g.
 #   LIVEKIT_API_SECRET=$(openssl rand -base64 32)
 #   STUNNER_PASSWORD=$(openssl rand -base64 24)
+#   STUNNER_HOST_IP=$(ipconfig getifaddr en0)   # your real LAN IP - see note below
 
 set -a; source .env.local; set +a
 ```
+
+`STUNNER_HOST_IP` is not a secret, but it **must** be your machine's real LAN
+IP, not `127.0.0.1`/`localhost` - see **Browser clients and `127.0.0.1`**
+below for why this one is load-bearing.
 
 ## Setup
 
@@ -170,6 +185,33 @@ kubectl -n stunner port-forward deploy/udp-gateway 8080:8080 &
 curl -s http://localhost:8080/metrics | grep ^stunner_
 ```
 
+### Browser clients and `127.0.0.1`
+
+This was a real, confirmed-and-fixed bug, not a theory: with `STUNNER_HOST_IP`
+set to `127.0.0.1`, a browser configured with `iceTransportPolicy: 'relay'`
+(the client-side setting that forces TURN-only ICE, needed because without it
+browsers also offer a host candidate that LiveKit's SFU can nominate even
+though it's unreachable - see below) gathered **zero** ICE candidates and sent
+**zero** packets to `stunnerd` - no error, just silent failure. The same
+config pointed at the machine's real LAN IP instead worked immediately: a
+proper `typ relay` candidate, a successful connection, and `stunnerd`'s own
+`stunner_cluster_bytes_total` counter jumping from flat-zero to six figures
+during a live call. This matches Chrome's evolving Local/Private Network
+Access restrictions, which are stricter about loopback addresses than
+regular LAN ones for WebRTC ICE gathering specifically. The `lk` CLI client
+never hit this (it's not a browser), which is why the CLI tests always
+worked against `127.0.0.1` while the browser UI silently didn't.
+
+Separately: even with a reachable TURN server, a plain `new Room()` (default
+`iceTransportPolicy: 'all'`) let the browser offer its own LAN-IP host
+candidate alongside the relay one, and ICE would nominate the host pair -
+which looks "connected" in LiveKit's own logs but can never actually carry
+media, since the pod genuinely cannot route to a client's LAN address. Forcing
+relay-only is what makes STUNner the *only* possible path, which is the whole
+point of this architecture. In `ui/index.html` this is set on `room.connect()`
+itself (`{ rtcConfig: { iceTransportPolicy: 'relay' } }`), not on `new
+Room()` - livekit-client only partially honors the latter.
+
 ### What this proved, repeatedly, in this session
 
 - `stunner_allocations_active` rose from `0` to `4`+ as soon as the call
@@ -204,12 +246,10 @@ Open two tabs:
 - `http://localhost:8081/?identity=caller&room=uicall`
 - `http://localhost:8081/?identity=agent&room=uicall`
 
-This UI path is manual/human-driven only for now; an automated headless-browser
-test was attempted and removed because it didn't reliably exercise the real
-relay path (it's a harder problem than it looks - two ICE agents running on
-the same machine under headless Chromium don't behave the same as two real
-browsers on separate networks). The CLI path above is the one with repeated,
-verified proof.
+Verified working end-to-end with real audio crossing the relay (see
+**Browser clients and `127.0.0.1`** above for the bug that had to be fixed
+first - `STUNNER_HOST_IP` must be a real LAN IP, and relay-only ICE must be
+forced).
 
 ## Local-only quirks vs. a real cluster
 

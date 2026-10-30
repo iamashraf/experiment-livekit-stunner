@@ -173,7 +173,13 @@ connectBtn.addEventListener('click', async () => {
   });
 
   try {
-    await room.connect(url, token);
+    // Force relay-only ICE here, on connect()'s own rtcConfig - NOT on
+    // `new Room({rtcConfig})`, which livekit-client only partially honors.
+    // Without this, the browser also offers a host candidate (its own LAN
+    // IP), and ICE can nominate that pair instead of the STUNner relay even
+    // though the media server's pod can never actually route to a client's
+    // LAN address - the call looks "connected" but no media crosses.
+    await room.connect(url, token, { rtcConfig: { iceTransportPolicy: 'relay' } });
     await room.localParticipant.setMicrophoneEnabled(true);
     statusEl.textContent = `connected as ${room.localParticipant.identity} to room ${room.name}`;
     connectBtn.disabled = true;

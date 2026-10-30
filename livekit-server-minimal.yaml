@@ -41,9 +41,17 @@ spec:
 ---
 # Livekit server - ordinary pod, hostNetwork: false (default), no Ingress/TLS.
 # Signaling is reached via the `livekit-signaling` Ingress; media is reachable
-# ONLY through the STUNner TURN relay (127.0.0.1:3478), since the rtc UDP port
-# range and TCP fallback port are deliberately not exposed outside the
-# cluster. A successful call therefore proves the media crossed STUNner.
+# ONLY through the STUNner TURN relay, since the rtc UDP port range and TCP
+# fallback port are deliberately not exposed outside the cluster. A
+# successful call therefore proves the media crossed STUNner.
+#
+# STUNNER_HOST_IP must be the host machine's real LAN IP, NOT 127.0.0.1/
+# localhost - a browser's WebRTC/ICE stack silently refuses to even attempt
+# TURN candidate gathering against a loopback address (confirmed: relay-only
+# ICE produced zero candidates and zero stunnerd traffic against 127.0.0.1,
+# and worked immediately once pointed at the LAN IP instead). Find yours
+# with `ipconfig getifaddr en0` (Mac) or `hostname -I` (Linux). This only
+# matters for browser clients; the `lk` CLI works fine against 127.0.0.1.
 #
 # Secrets are NOT hardcoded here - copy .env.example to .env.local, fill in
 # real values, then: set -a; source .env.local; set +a
@@ -65,10 +73,10 @@ data:
       port_range_start: 50000
       tcp_port: 7801
       stun_servers:
-      - 127.0.0.1:3478
+      - ${STUNNER_HOST_IP}:3478
       turn_servers:
       - credential: ${STUNNER_PASSWORD}
-        host: 127.0.0.1
+        host: ${STUNNER_HOST_IP}
         port: 3478
         protocol: udp
         username: ${STUNNER_USERNAME}
